@@ -10,11 +10,15 @@ from openpyxl.drawing.image import Image as XLImage
 # إعدادات عامة
 # ==========================
 
-# فولدر الصور
-IMAGES_DIR = "images"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# الروت المستهدف الذي يحتوي ملفات الإكسل
+ROOT_DIR = os.path.join(SCRIPT_DIR, "2025-12-05/Electric")
 
-# اسم ملف الداتا الناتج
-OUTPUT_EXCEL = "packages_data.xlsx"
+# فولدر الصور (داخل الروت)
+IMAGES_DIR = os.path.join(SCRIPT_DIR, "images")
+
+# اسم ملف الداتا الناتج (داخل الروت أيضاً)
+OUTPUT_EXCEL = os.path.join(SCRIPT_DIR, "packages_data.xlsx")
 
 # كلمات الهيدر التي نبحث عنها (تُقارن بحروف صغيرة)
 HEADER_KEYWORDS = ("part number", "description", "qty")
@@ -67,6 +71,7 @@ def log_debug(msg: str) -> None:
 def ensure_clean_images_dir() -> None:
     """
     يتأكد من وجود فولدر الصور ويمسح أي ملفات موجودة بداخله قبل البدء.
+    يعمل داخل IMAGES_DIR المحددة تحت ROOT_DIR.
     """
     if os.path.isdir(IMAGES_DIR):
         for name in os.listdir(IMAGES_DIR):
@@ -77,6 +82,7 @@ def ensure_clean_images_dir() -> None:
         os.makedirs(IMAGES_DIR, exist_ok=True)
 
     log_info(f"Images directory ready and cleaned: '{IMAGES_DIR}'")
+
 
 
 def get_image_bytes(img) -> bytes | None:
@@ -499,22 +505,23 @@ def main():
     ensure_clean_images_dir()
 
     files = [
-        f for f in os.listdir(".")
+        f for f in os.listdir(ROOT_DIR)
         if f.lower().endswith(".xlsx") and not f.startswith("~$")
     ]
 
     if not files:
-        log_error("No .xlsx files found in current directory.")
+        log_error(f"No .xlsx files found in ROOT_DIR: {ROOT_DIR}")
         return
 
-    log_info(f"Found {len(files)} .xlsx file(s) in current directory.")
+    log_info(f"Found {len(files)} .xlsx file(s) in ROOT_DIR: {ROOT_DIR}")
 
     all_rows: List[tuple[str, str, str]] = []
 
     for fname in files:
         print()
         print(f"{MAGENTA}========== Processing file: {fname} =========={RESET}")
-        rows = process_workbook(fname)
+        full_path = os.path.join(ROOT_DIR, fname)
+        rows = process_workbook(full_path)
         all_rows.extend(rows)
 
     if not all_rows:
