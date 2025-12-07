@@ -246,6 +246,7 @@ def build_packages(ws, top_y, bottom_y) -> List[Dict[str, Any]]:
             "abs_images": [],  # صور AbsoluteAnchor
             "uid": None,       # سيملأ لاحقاً
             "image_filename": None,
+            "category": None,  # سنملأها لاحقاً من العمود F
         }
         log_debug(f"New package detected at row {row}: '{text}'")
 
@@ -262,6 +263,34 @@ def build_packages(ws, top_y, bottom_y) -> List[Dict[str, Any]]:
 
     log_success(f"{len(packages)} packages detected.")
     return packages
+
+
+
+def fill_packages_categories(ws, packages: List[Dict[str, Any]]) -> None:
+    """
+    لكل باكج:
+    - نبحث في العمود F (col=6) ضمن مجال أسطر الباكج [start_row..end_row]
+    - نأخذ أول خانة فيها نص (بعد strip)، وهذه هي Category
+    - إذا لم يوجد أي نص، تبقى Category = None
+    """
+    CATEGORY_COL = 6  # العمود F
+
+    for pkg in packages:
+        category = None
+
+        for row in range(pkg["start_row"], pkg["end_row"] + 1):
+            cell_value = ws.cell(row=row, column=CATEGORY_COL).value
+            if isinstance(cell_value, str):
+                text = cell_value.strip()
+                if text:
+                    category = text
+                    break
+
+        pkg["category"] = category
+        log_debug(
+            f"Package '{pkg['name']}' rows [{pkg['start_row']}-{pkg['end_row']}]: "
+            f"Category = '{category}'"
+        )
 
 
 # ==========================
@@ -291,18 +320,17 @@ def find_package_for_y_center(packages: List[Dict[str, Any]], center_y: int) -> 
             return pkg
     return None
 
-
-def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[tuple[str, str, str]]:
+def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     - تمرّ على الصور وتربطها بالباكجات (OneCellAnchor → حسب السطر، AbsoluteAnchor → حسب الـ Y).
     - لكل باكج نولّد UID حتى لو لم يكن لها صورة.
     - لو وُجدت صورة وتم حفظها:
-        id = uid
-        image = uid.ext
+        pkg["uid"] = uid
+        pkg["image_filename"] = اسم ملف الصورة
       لو لم تُحفظ:
-        id = uid
-        image = "" (فارغ)
-    - ترجع قائمة صفوف: (id, image, package_name)
+        pkg["uid"] = uid
+        pkg["image_filename"] = None
+    - لا تبني صفوف إكسل، فقط تُحدّث كائنات الباكجات.
     """
     images = getattr(ws, "_images", [])
     log_info(f"Total images found: {len(images)}")
@@ -392,9 +420,7 @@ def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[tuple[st
             log_warn(f"Image #{idx} with anchor type '{tname}' could not be processed for mapping.")
 
     # --- المرحلة الثانية: توليد UID لكل باكج وحفظ الصورة إن وجدت ---
-    rows_for_excel: List[tuple[str, str, str]] = []
-
-    log_info("=== Package list (all packages, id always, image optional) ===")
+    log_info("=== Package list (id + optional image) ===")
     print("package_name\tstart_row\tid\timage")
 
     for pkg in packages:
@@ -405,9 +431,8 @@ def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[tuple[st
         elif pkg["abs_images"]:
             img_idx = pkg["abs_images"][0]
 
-        # نولّد دائماً UID للباكج حتى لو ما عندها صورة
         uid = str(uuid4())
-        filename = ""   # الافتراضي: لا يوجد ملف صورة
+        filename = None  # None تعني لا يوجد ملف صورة
 
         if img_idx is not None:
             img_obj = images[img_idx]
@@ -433,38 +458,36 @@ def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[tuple[st
                     )
                 except Exception as e:
                     log_error(f"Failed to save image for package '{pkg['name']}': {e}")
-                    filename = ""  # نفشل فنرجعها فارغة
+                    filename = None  # نفشل فنرجعها None
 
-        # نخزّن المعلومات في الباكج (لو حاب تستخدمها لاحقاً)
         pkg["uid"] = uid
-        pkg["image_filename"] = filename if filename else None
+        pkg["image_filename"] = filename
 
-        # سطر للكونسول
-        print(f"{pkg['name']}\t{pkg['start_row']}\t{uid}\t{filename}")
-
-        # سطر للإكسل (id, image, package name)
-        rows_for_excel.append((uid, filename, pkg["name"]))
+        print(f"{pkg['name']}\t{pkg['start_row']}\t{uid}\t{filename or ''}")
 
     if unmatched_images:
         log_warn(f"Unmatched images: {unmatched_images}")
 
-    return rows_for_excel
-
+    return packages
 
 # ==========================
 # معالجة ملف واحد
 # ==========================
 
-def process_workbook(path: str) -> List[tuple[str, str, str]]:
+def process_workbook(path: str) -> List[tuple[str, str, str, str, str]]:
     """
     تعالج ملف إكسل واحد:
     - تفتح الملف
     - تبني خريطة Y
     - تبني الباكجات
-    - تربط الصور بالباكجات (وتحفظ الصور بالفولدر)
-    - ترجع قائمة صفوف (id, image, package name) لهذا الملف.
+    - تملأ Category من العمود F
+    - تربط الصور بالباكجات (وتحفظ الصور بالفولدر وتملأ uid / image_filename)
+    - ترجع قائمة صفوف:
+      (PackageId, ImagePath, TitleTrim, PackageName, Category)
     """
     basename = os.path.basename(path)
+    title_trim = os.path.splitext(basename)[0].strip()  # هذا هو Title - TRIM
+
     log_info(f"Opening workbook: {basename}")
 
     try:
@@ -484,9 +507,23 @@ def process_workbook(path: str) -> List[tuple[str, str, str]]:
         log_warn(f"No packages found in '{basename}'. Skipping image mapping.")
         return []
 
-    # ربط الصور بالباكجات + حفظ الصور + جمع الصفوف
-    rows = link_images_to_packages(ws, packages)
-    return rows
+    # أولاً: ملء الفئة Category من العمود F
+    fill_packages_categories(ws, packages)
+
+    # ثانياً: ربط الصور + توليد uid + حفظ الصور
+    link_images_to_packages(ws, packages)
+
+    # الآن نبني صفوف الإكسل لهذا الملف فقط
+    rows_for_excel: List[tuple[str, str, str, str, str]] = []
+    for pkg in packages:
+        uid = pkg.get("uid")
+        image_filename = pkg.get("image_filename") or ""
+        pkg_name = pkg["name"]
+        category = pkg.get("category") or ""
+
+        rows_for_excel.append((uid, image_filename, title_trim, pkg_name, category))
+
+    return rows_for_excel
 
 
 # ==========================
@@ -528,36 +565,78 @@ def main():
         log_warn("No rows were collected. Excel data file will not be created.")
         return
 
-    # إنشاء ملف الإكسل النهائي
     wb_out = Workbook()
     ws_out = wb_out.active
     ws_out.title = "packages"
 
-    # ضبط عرض الأعمدة الثلاثة (قيمة كبيرة لتناسب الصور 400px تقريبياً)
+    # عرض الأعمدة الأساسية (عدّلها كما تحب)
     ws_out.column_dimensions["A"].width = 40
     ws_out.column_dimensions["B"].width = 40
     ws_out.column_dimensions["C"].width = 40
+    ws_out.column_dimensions["D"].width = 40
 
-    # الهيدر
-    ws_out.append(["id", "image", "package name"])
+    # الهيدر المطلوب
+    # الهيدر المطلوب (مع Category قبل delete)
+    ws_out.append([
+        "PackageId",
+        "ImagePath",
+        "Title - TRIM",
+        "PackageName",
+        "No",
+        "PartNo",
+        "Part Name And Standard",
+        "QTY",
+        "Category",
+        "delete",
+        "price",
+        "Description",
+        "Old Part No.",
+        "Names and specifications of old parts",
+        "note",
+        "is_red",
+        "is_line",
+        "is_deleted",
+        "is_orange",
+        "is_pink",
+        "is_yellow",
+        "internal_notes",
+    ])
 
     # البيانات + إدراج الصور
-    for row_idx, (uid, filename, pkg_name) in enumerate(all_rows, start=2):
-        ws_out.cell(row=row_idx, column=1, value=uid)
-        ws_out.cell(row=row_idx, column=2, value=filename)
-        ws_out.cell(row=row_idx, column=3, value=pkg_name)
+    for row_idx, (uid, filename, title_trim, pkg_name, category) in enumerate(all_rows, start=2):
+        ws_out.append([
+            uid,          # PackageId
+            filename,     # ImagePath
+            title_trim,   # Title - TRIM
+            pkg_name,     # PackageName
+            "",           # No
+            "",           # PartNo
+            "",           # Part Name And Standard
+            "",           # QTY
+            category,     # Category
+            "",           # delete
+            "",           # price
+            "",           # Description
+            "",           # Old Part No.
+            "",           # Names and specifications of old parts
+            "",           # note
+            "",           # is_red
+            "",           # is_line
+            "",           # is_deleted
+            "",           # is_orange
+            "",           # is_pink
+            "",           # is_yellow
+            "",           # internal_notes
+        ])
 
-        # إدراج الصورة في نفس عمود image (العمود B) إن وُجد اسم ملف
         if filename:
             img_path = os.path.join(IMAGES_DIR, filename)
             if os.path.exists(img_path):
                 try:
                     xl_img = XLImage(img_path)
-                    # حجم الصورة (تقريباً 400×400)
                     xl_img.width = 80
                     xl_img.height = 80
                     ws_out.add_image(xl_img, f"B{row_idx}")
-                    # ارتفاع الصف ليوافق حجم الصورة تقريباً
                     ws_out.row_dimensions[row_idx].height = 60
                 except Exception as e:
                     log_warn(f"Failed to embed image '{img_path}' into Excel: {e}")
