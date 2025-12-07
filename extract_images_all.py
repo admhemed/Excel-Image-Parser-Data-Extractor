@@ -12,9 +12,9 @@ from openpyxl.drawing.image import Image as XLImage
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # الروت المستهدف الذي يحتوي ملفات الإكسل
-ROOT_DIR = os.path.join(SCRIPT_DIR, "2025-12-05/Electric")
+ROOT_DIR = os.path.join(SCRIPT_DIR, "TurnKey Files")
 
-# فولدر الصور (بجانب السكربت، كما تعمّدت)
+# فولدر الصور (بجانب السكربت)
 IMAGES_DIR = os.path.join(SCRIPT_DIR, "images")
 
 # اسم ملف الداتا الناتج (بجانب السكربت أيضاً)
@@ -65,6 +65,28 @@ def log_debug(msg: str) -> None:
 
 
 # ==========================
+# توابع مساعدة عامة
+# ==========================
+
+def to_int_or_none(value) -> Optional[int]:
+    """
+    محاولة تحويل القيمة إلى int وإرجاع None لو فشل التحويل أو كانت القيمة فارغة.
+    مشابهة تماماً لما كان يحدث في نسخة pandas.
+    """
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        # أحياناً تكون القيمة float مثل 3.0
+        f = float(text)
+        return int(f)
+    except (ValueError, TypeError):
+        return None
+
+
+# ==========================
 # إدارة فولدر الصور
 # ==========================
 
@@ -100,7 +122,6 @@ def get_image_bytes(img) -> Optional[bytes]:
     if isinstance(data_attr, (bytes, bytearray)):
         return bytes(data_attr)
 
-    # لو فشلنا بكل الطرق
     log_warn("Could not extract image bytes from Image object.")
     return None
 
@@ -118,7 +139,6 @@ def guess_image_ext(data: bytes) -> str:
         return "gif"
     if data.startswith(b"BM"):
         return "bmp"
-    # افتراضي
     return "jpg"
 
 
@@ -187,20 +207,14 @@ def find_first_header_row(ws) -> int:
 
 def build_packages(ws, top_y, bottom_y) -> List[Dict[str, Any]]:
     """
-    تبني قائمة الباكجات اعتماداً على العمود الأول:
-    - نبحث أولاً عن سطر الهيدر في أي عمود.
-    - نبدأ من السطر السابق للهيدر، ونستخدم العمود الأول فقط لاكتشاف أسماء الباكجات.
-    - كل خلية غير فارغة (وليست كلمة هيدر، وليست قيمة خطأ مثل #VALUE!) في العمود الأول
-      تعتبر اسم باكج وبداية له.
-    - أسطر الباكج تمتد من بداية الباكج حتى السطر السابق لبداية الباكج التالي.
-    - نحسب لكل باكج أيضاً y_start و y_end على محور Y.
+    تبني قائمة الباكجات اعتماداً على العمود الأول.
+    نفس المنطق السابق مع y_start و y_end.
     """
     header_row = find_first_header_row(ws)
     if header_row <= 1:
         log_error("Cannot determine package start row (header row not found or at first row).")
         return []
 
-    # بداية البحث عن أسماء الباكجات: السطر السابق للهيدر
     start_row = header_row - 1
     log_info(f"Package detection will start from row {start_row} (row above first header).")
 
@@ -208,29 +222,22 @@ def build_packages(ws, top_y, bottom_y) -> List[Dict[str, Any]]:
     current_package: Optional[Dict[str, Any]] = None
 
     for row in range(start_row, ws.max_row + 1):
-        # العمود الأول فقط: هو الذي يحتوي أسماء الباكجات
         cell_value = ws.cell(row=row, column=1).value
         if cell_value is None:
-            # سطر فارغ في العمود الأول → يبقى ضمن الباكج الحالي إن وجد
             continue
 
         text = str(cell_value).strip()
         lower_text = text.lower()
 
-        # نتجاهل ظهور كلمات الهيدر في العمود الأول لو حصلت
         if any(keyword in lower_text for keyword in HEADER_KEYWORDS):
             continue
 
-        # نتجاهل قيم الأخطاء مثل #VALUE! بحيث لا تفتح باكج جديدة
         if lower_text in EXCLUDED_PACKAGE_TOKENS:
             log_debug(f"Ignoring error-like value at row {row}: '{text}'")
             continue
 
-        # هنا خلية غير فارغة وليست هيدر وليست قيمة خطأ → اسم باكج جديد
         if current_package is not None:
-            # ننهي الباكج السابق عند السطر السابق
             current_package["end_row"] = row - 1
-            # نحسب نطاق الـ Y
             current_package["y_start"] = top_y[current_package["start_row"]]
             current_package["y_end"] = bottom_y[current_package["end_row"]]
             packages.append(current_package)
@@ -238,18 +245,17 @@ def build_packages(ws, top_y, bottom_y) -> List[Dict[str, Any]]:
         current_package = {
             "name": text,
             "start_row": row,
-            "end_row": None,   # سنحددها لاحقاً
+            "end_row": None,
             "y_start": None,
             "y_end": None,
-            "images": [],      # صور OneCellAnchor
-            "abs_images": [],  # صور AbsoluteAnchor
-            "uid": None,       # سيملأ لاحقاً
+            "images": [],
+            "abs_images": [],
+            "uid": None,
             "image_filename": None,
-            "category": None,  # سنملأها لاحقاً من العمود F
+            "category": None,
         }
         log_debug(f"New package detected at row {row}: '{text}'")
 
-    # إنهاء آخر باكج إن وجد
     if current_package is not None:
         current_package["end_row"] = ws.max_row
         current_package["y_start"] = top_y[current_package["start_row"]]
@@ -266,10 +272,7 @@ def build_packages(ws, top_y, bottom_y) -> List[Dict[str, Any]]:
 
 def fill_packages_categories(ws, packages: List[Dict[str, Any]]) -> None:
     """
-    لكل باكج:
-    - نبحث في العمود F (col=6) ضمن مجال أسطر الباكج [start_row..end_row]
-    - نأخذ أول خانة فيها نص (بعد strip)، وهذه هي Category
-    - إذا لم يوجد أي نص، تبقى Category = None
+    ملء Category من العمود F ضمن مدى أسطر كل باكج.
     """
     CATEGORY_COL = 6  # العمود F
 
@@ -297,16 +300,8 @@ def fill_packages_categories(ws, packages: List[Dict[str, Any]]) -> None:
 
 def detect_detail_columns(ws, first_package: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
     """
-    تحاول تحديد أعمدة:
-    No, Part Number, Description, QTY
-    بالاعتماد على الباكج الأولى فقط.
-
-    المنطق:
-    - نأخذ مجال الأسطر [start_row .. end_row] لأول باكج.
-    - نبحث في الأعمدة من 2 إلى 6 (خمسة أعمدة بعد العمود الأول).
-    - أول خلية نصية تحتوي 'no' (بحروف صغيرة) تعتبر عمود No.
-    - بعدها مباشرة ثلاثة أعمدة: Part Number, Description, QTY.
-    ترجع tuple (col_no, col_part, col_desc, col_qty) أو None إذا لم تُكتشف.
+    كما اتفقنا: نبحث داخل أسطر الباكج الأولى عن عمود يحتوي 'no'
+    في الأعمدة 2..6، ونعتبره عمود No، وما بعده: Part, Desc, QTY.
     """
     start_row = first_package["start_row"]
     end_row = first_package["end_row"]
@@ -351,14 +346,10 @@ def detect_detail_columns(ws, first_package: Dict[str, Any]) -> Optional[Tuple[i
 
 
 # ==========================
-# ربط الصور بالباكجات (مفصّل)
+# ربط الصور بالباكجات
 # ==========================
 
 def find_package_for_row(packages: List[Dict[str, Any]], row: int) -> Optional[Dict[str, Any]]:
-    """
-    تبحث عن الباكج الذي يحتوي هذا السطر:
-    start_row <= row <= end_row
-    """
     for pkg in packages:
         if pkg["start_row"] <= row <= pkg["end_row"]:
             return pkg
@@ -366,10 +357,6 @@ def find_package_for_row(packages: List[Dict[str, Any]], row: int) -> Optional[D
 
 
 def find_package_for_y_center(packages: List[Dict[str, Any]], center_y: int) -> Optional[Dict[str, Any]]:
-    """
-    تبحث عن الباكج الذي يحتوي مركز الصورة عمودياً:
-    y_start <= center_y < y_end
-    """
     for pkg in packages:
         if pkg["y_start"] is None or pkg["y_end"] is None:
             continue
@@ -379,10 +366,6 @@ def find_package_for_y_center(packages: List[Dict[str, Any]], center_y: int) -> 
 
 
 def collect_worksheet_images(ws):
-    """
-    تجمع الصور من الشيت وتطبع إحصائيات بسيطة عنها.
-    ترجع قائمة الصور كما هي (objects).
-    """
     images = getattr(ws, "_images", [])
     log_info(f"Total images found: {len(images)}")
     log_info(f"Anchor types count: {Counter(type(img.anchor).__name__ for img in images)}")
@@ -390,19 +373,12 @@ def collect_worksheet_images(ws):
 
 
 def map_images_to_packages(images, packages: List[Dict[str, Any]]) -> List[int]:
-    """
-    تمرّ على الصور وتربطها بالباكجات فقط:
-    - تملأ pkg['images'] و pkg['abs_images']
-    - لو تعذر ربط صورة بأي باكج تضاف إلى unmatched_images
-    لا تحفظ صور على القرص ولا تولّد UID هنا.
-    """
     unmatched_images: List[int] = []
 
     for idx, img in enumerate(images):
         anchor = img.anchor
         tname = type(anchor).__name__
 
-        # --- OneCellAnchor / TwoCellAnchor: الربط عن طريق رقم السطر ---
         if tname in ["OneCellAnchor", "TwoCellAnchor"] and hasattr(anchor, "_from") and anchor._from is not None:
             fm = anchor._from
             row_zero_based = getattr(fm, "row", 0)
@@ -429,7 +405,6 @@ def map_images_to_packages(images, packages: List[Dict[str, Any]]) -> List[int]:
                 )
             continue
 
-        # --- AbsoluteAnchor: الربط عن طريق center_y ---
         if tname == "AbsoluteAnchor" and hasattr(anchor, "pos") and anchor.pos is not None:
             pos = anchor.pos
             ext = getattr(anchor, "ext", None)
@@ -474,7 +449,6 @@ def map_images_to_packages(images, packages: List[Dict[str, Any]]) -> List[int]:
                 )
             continue
 
-        # --- أنواع أنكر أخرى غير مدعومة ---
         unmatched_images.append(idx)
         log_warn(f"Image #{idx} with anchor type '{tname}' could not be processed for mapping.")
 
@@ -482,14 +456,6 @@ def map_images_to_packages(images, packages: List[Dict[str, Any]]) -> List[int]:
 
 
 def assign_uids_and_save_images(images, packages: List[Dict[str, Any]]) -> None:
-    """
-    لكل باكج:
-    - اختيار أول صورة (OneCellAnchor ثم Absolute إن وُجدت)
-    - توليد UID
-    - حفظ الصورة في IMAGES_DIR (إن وُجدت bytes) وتخزين اسم الملف
-    - تعبئة pkg['uid'] و pkg['image_filename']
-    لا تقوم بأي منطق ربط؛ تفترض أن map_images_to_packages سبق أن ملأ indices.
-    """
     log_info("=== Package list (id + optional image) ===")
     print("package_name\tstart_row\tid\timage")
 
@@ -536,15 +502,7 @@ def assign_uids_and_save_images(images, packages: List[Dict[str, Any]]) -> None:
 
 
 def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    تنسيق عالي المستوى:
-    - تجمع الصور من الشيت
-    - تربط الصور بالباكجات (indices فقط)
-    - تولّد UID لكل باكج وتحفظ صورة واحدة (إن وُجدت) في IMAGES_DIR
-    - ترجع قائمة الباكجات بعد التحديث
-    """
     images = collect_worksheet_images(ws)
-
     unmatched_images = map_images_to_packages(images, packages)
     assign_uids_and_save_images(images, packages)
 
@@ -557,13 +515,43 @@ def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str
 # ==========================
 # فك الدمج العمودي (forward-fill) في أعمدة التفاصيل
 # ==========================
+def flatten_vertical_merges_in_column(ws, col: int) -> None:
+    """
+    يفك الدمج العمودي في عمود واحد (مثل عمود No أو QTY):
+    - يبحث في ws.merged_cells عن أي range من نوع عمودي في هذا العمود (min_col == max_col == col)
+    - يأخذ قيمة الخلية الأولى (أعلى سطر في الدمج)
+    - يعمل unmerge للـ range
+    - يكتب نفس القيمة في كل الأسطر ضمن هذا الدمج لهذا العمود
+    """
+    # نأخذ نسخة من القائمة لأننا سنعدل الـ merged_cells أثناء الدوران
+    merged_ranges = list(ws.merged_cells.ranges)
+
+    for merged_range in merged_ranges:
+        min_row = merged_range.min_row
+        max_row = merged_range.max_row
+        min_col = merged_range.min_col
+        max_col = merged_range.max_col
+
+        # نهتم فقط بحالات الدمج العمودي في هذا العمود بالذات
+        if min_col == max_col == col and max_row > min_row:
+            # قيمة الخلية الأصلية (أعلى الخلية في الدمج)
+            value = ws.cell(row=min_row, column=col).value
+
+            # نفك الدمج
+            ws.unmerge_cells(str(merged_range))
+
+            # ننسخ القيمة على كل الأسطر في هذا العمود
+            if value is not None and str(value).strip() != "":
+                for row in range(min_row, max_row + 1):
+                    ws.cell(row=row, column=col).value = value
+
+            log_debug(
+                f"Flattened vertical merge in col {col} "
+                f"rows [{min_row}-{max_row}] with value '{value}'"
+            )
+
 
 def forward_fill_column_in_range(ws, col: int, start_row: int, end_row: int) -> None:
-    """
-    تعوّض الدمج العمودي في عمود معيّن ضمن مجال أسطر:
-    - تمر على الأسطر من start_row إلى end_row
-    - أي خلية فارغة تأخذ آخر قيمة غير فارغة فوقها
-    """
     last_value = None
 
     for row in range(start_row, end_row + 1):
@@ -577,6 +565,43 @@ def forward_fill_column_in_range(ws, col: int, start_row: int, end_row: int) -> 
                 cell.value = last_value
 
 
+def find_data_rows_range_for_package(
+    ws,
+    pkg: Dict[str, Any],
+    col_part: int,
+    col_desc: int,
+) -> Optional[Tuple[int, int]]:
+    """
+    يحدد نطاق أسطر البيانات (parts) لكل باكج:
+    - أي سطر فيه Part Number أو Description نعتبره داتا.
+    - يرجع (data_start, data_end) أو None لو لم يوجد داتا.
+    هذا يحاكي منطق data_rows في كود pandas القديم.
+    """
+    data_start = None
+    data_end = None
+
+    for row in range(pkg["start_row"], pkg["end_row"] + 1):
+        part_val = ws.cell(row=row, column=col_part).value
+        desc_val = ws.cell(row=row, column=col_desc).value
+
+        has_part = (
+            part_val is not None and str(part_val).strip() != ""
+        )
+        has_desc = (
+            desc_val is not None and str(desc_val).strip() != ""
+        )
+
+        if has_part or has_desc:
+            if data_start is None:
+                data_start = row
+            data_end = row
+
+    if data_start is None or data_end is None:
+        return None
+
+    return data_start, data_end
+
+
 def normalize_merged_detail_cells_for_all_packages(
     ws,
     packages: List[Dict[str, Any]],
@@ -584,41 +609,54 @@ def normalize_merged_detail_cells_for_all_packages(
     col_part: int,
     col_desc: int,
     col_qty: int,
-) -> None:
+) -> Dict[int, Tuple[int, int]]:
     """
-    تعوّض الدمج العمودي داخل أعمدة تفاصيل القطع ضمن مجال أسطر كل باكج.
-
-    حالياً نقلّد سلوك النسخة القديمة:
-    - نعمل forward-fill لعمود No
-    - وعمود QTY فقط
-    (Part Number و Description غالباً لا تكون مدموجة عمودياً)
+    تعوّض الدمج العمودي داخل أعمدة تفاصيل القطع ضمن مجال أسطر الداتا لكل باكج.
+    ترجع dict يربط package_index → (data_start, data_end) لاستخدامه لاحقاً.
     """
-    for pkg in packages:
-        start_row = pkg["start_row"]
-        end_row = pkg["end_row"]
 
-        forward_fill_column_in_range(ws, col_no, start_row, end_row)
-        forward_fill_column_in_range(ws, col_qty, start_row, end_row)
+    # أولاً: نفك الدمج العمودي في عمودي No و QTY على مستوى الشيت كله
+    # (لأن نفس الدمج قد يمر بعدة باكجات، وأسهل نفكه مرة واحدة)
+    flatten_vertical_merges_in_column(ws, col_no)
+    flatten_vertical_merges_in_column(ws, col_qty)
+
+    data_ranges: Dict[int, Tuple[int, int]] = {}
+
+    for idx, pkg in enumerate(packages):
+        res = find_data_rows_range_for_package(ws, pkg, col_part, col_desc)
+        if res is None:
+            log_warn(f"No data rows found for package '{pkg['name']}'.")
+            continue
+
+        data_start, data_end = res
+        data_ranges[idx] = (data_start, data_end)
+
+        # بعد فك الدمج، نعمل forward-fill ضمن نطاق بيانات القطع فقط
+        forward_fill_column_in_range(ws, col_no, data_start, data_end)
+        forward_fill_column_in_range(ws, col_qty, data_start, data_end)
+
+        log_debug(
+            f"Forward-filled No/QTY for package '{pkg['name']}' "
+            f"rows [{data_start}-{data_end}]."
+        )
+
+    return data_ranges
 
 
 # ==========================
-# معالجة ملف واحد
+# معالجة ملف واحد واستخراج أسطر القطع
 # ==========================
 
-def process_workbook(path: str) -> List[tuple[str, str, str, str, str]]:
+def process_workbook(path: str) -> List[tuple]:
     """
     تعالج ملف إكسل واحد:
-    - تفتح الملف
-    - تبني خريطة Y
-    - تبني الباكجات
-    - تملأ Category من العمود F
-    - تربط الصور بالباكجات (وتحفظ الصور بالفولدر وتملأ uid / image_filename)
-    - تحاول اكتشاف أعمدة No/Part/Desc/QTY وتطبّق forward-fill على No و QTY
-    - ترجع قائمة صفوف:
-      (PackageId, ImagePath, TitleTrim, PackageName, Category)
+    - تبني الباكجات + الفئات + الصور + الأعمدة التفصيلية + فك الدمج
+    - تبني أسطر القطع لكل باكج:
+      (PackageId, ImagePath, TitleTrim, PackageName,
+       No, PartNo, PartNameAndStandard, QTY, Category)
     """
     basename = os.path.basename(path)
-    title_trim = os.path.splitext(basename)[0].strip()  # هذا هو Title - TRIM
+    title_trim = os.path.splitext(basename)[0].strip()
 
     log_info(f"Opening workbook: {basename}")
 
@@ -630,43 +668,97 @@ def process_workbook(path: str) -> List[tuple[str, str, str, str, str]]:
 
     ws = wb.active
 
-    # حساب خريطة Y للصفوف
     top_y, bottom_y = compute_row_y_map(ws)
 
-    # بناء الباكجات مع y_start / y_end
     packages = build_packages(ws, top_y, bottom_y)
     if not packages:
-        log_warn(f"No packages found in '{basename}'. Skipping image mapping.")
+        log_warn(f"No packages found in '{basename}'.")
         return []
 
-    # أولاً: ملء الفئة Category من العمود F
     fill_packages_categories(ws, packages)
 
-    # ثانياً: ربط الصور + توليد uid + حفظ الصور
     link_images_to_packages(ws, packages)
 
-    # ثالثاً: اكتشاف أعمدة التفاصيل + فك الدمج في No و QTY (تحضيراً للخطوة القادمة)
     detail_cols = detect_detail_columns(ws, packages[0])
-    if detail_cols is not None:
-        col_no, col_part, col_desc, col_qty = detail_cols
-        normalize_merged_detail_cells_for_all_packages(
-            ws,
-            packages,
-            col_no,
-            col_part,
-            col_desc,
-            col_qty,
+    if detail_cols is None:
+        log_warn(
+            f"Detail columns could not be detected in '{basename}'. "
+            f"Only package-level rows will be emitted without part details."
         )
+        # fallback: نرجّع سطر واحد لكل باكج بدون تفاصيل
+        rows_for_excel: List[tuple] = []
+        for pkg in packages:
+            uid = pkg.get("uid")
+            image_filename = pkg.get("image_filename") or ""
+            pkg_name = pkg["name"]
+            category = pkg.get("category") or ""
+            rows_for_excel.append(
+                (uid, image_filename, title_trim, pkg_name, "", "", "", "", category)
+            )
+        return rows_for_excel
 
-    # الآن نبني صفوف الإكسل لهذا الملف فقط (باكجات فقط في هذه المرحلة)
-    rows_for_excel: List[tuple[str, str, str, str, str]] = []
-    for pkg in packages:
+    col_no, col_part, col_desc, col_qty = detail_cols
+
+    # نطبّق forward-fill على No و QTY ضمن مدى أسطر الداتا لكل باكج
+    data_ranges_by_pkg_index = normalize_merged_detail_cells_for_all_packages(
+        ws,
+        packages,
+        col_no,
+        col_part,
+        col_desc,
+        col_qty,
+    )
+
+    rows_for_excel: List[tuple] = []
+
+    # نمر على كل باكج ونبني أسطر القطع
+    for idx, pkg in enumerate(packages):
+        if idx not in data_ranges_by_pkg_index:
+            # باكج بدون داتا حقيقية
+            continue
+
+        data_start, data_end = data_ranges_by_pkg_index[idx]
+
         uid = pkg.get("uid")
         image_filename = pkg.get("image_filename") or ""
         pkg_name = pkg["name"]
         category = pkg.get("category") or ""
 
-        rows_for_excel.append((uid, image_filename, title_trim, pkg_name, category))
+        for row in range(data_start, data_end + 1):
+            no_val = ws.cell(row=row, column=col_no).value
+            part_val = ws.cell(row=row, column=col_part).value
+            desc_val = ws.cell(row=row, column=col_desc).value
+            qty_val = ws.cell(row=row, column=col_qty).value
+
+            # نتأكد أن السطر فيه Part أو Description
+            has_part = part_val is not None and str(part_val).strip() != ""
+            has_desc = desc_val is not None and str(desc_val).strip() != ""
+            if not (has_part or has_desc):
+                continue
+
+            # رقم الـ No يجب أن يكون عدداً صحيحاً (مثل النسخة القديمة)
+            no_int = to_int_or_none(no_val)
+            if no_int is None:
+                continue
+
+            qty_int = to_int_or_none(qty_val)
+
+            part_str = str(part_val).strip() if part_val is not None else ""
+            desc_str = str(desc_val).strip() if desc_val is not None else ""
+
+            rows_for_excel.append(
+                (
+                    uid,            # PackageId
+                    image_filename, # ImagePath
+                    title_trim,     # Title - TRIM
+                    pkg_name,       # PackageName
+                    no_int,         # No
+                    part_str,       # PartNo
+                    desc_str,       # Part Name And Standard
+                    qty_int,        # QTY
+                    category,       # Category
+                )
+            )
 
     return rows_for_excel
 
@@ -677,31 +769,40 @@ def process_workbook(path: str) -> List[tuple[str, str, str, str, str]]:
 
 def main():
     """
-    - يحضر فولدر الصور ويمسح محتوياته.
-    - يبحث عن كل ملفات .xlsx في ROOT_DIR (باستثناء ملفات إكسل المؤقتة ~$.)
-    - يعالج كل ملف على حدة ويجمع الصفوف.
+    - يحضّر فولدر الصور.
+    - يعالج كل ملف .xlsx في ROOT_DIR وفي المجلدات الفرعية داخله.
     - يبني ملف إكسل جديد packages_data.xlsx
-      يحتوي الأعمدة: id, image, package name, Category, وباقي الأعمدة الفارغة.
+      يحتوي أسطر القطع مع تكرار بيانات الباكج لكل سطر.
     """
     ensure_clean_images_dir()
 
-    files = [
-        f for f in os.listdir(ROOT_DIR)
-        if f.lower().endswith(".xlsx") and not f.startswith("~$")
-    ]
+    # نجمع كل ملفات .xlsx في ROOT_DIR وفي كل المجلدات الفرعية
+    xlsx_files: List[str] = []
+    for dirpath, _, filenames in os.walk(ROOT_DIR):
+        for name in filenames:
+            lower = name.lower()
+            if not lower.endswith(".xlsx"):
+                continue
+            if name.startswith("~$"):
+                # ملفات مؤقتة لإكسل
+                continue
+            xlsx_files.append(os.path.join(dirpath, name))
 
-    if not files:
-        log_error(f"No .xlsx files found in ROOT_DIR: {ROOT_DIR}")
+    if not xlsx_files:
+        log_error(f"No .xlsx files found under ROOT_DIR: {ROOT_DIR}")
         return
 
-    log_info(f"Found {len(files)} .xlsx file(s) in ROOT_DIR: {ROOT_DIR}")
+    log_info(f"Found {len(xlsx_files)} .xlsx file(s) under ROOT_DIR: {ROOT_DIR}")
+    for path in xlsx_files:
+        rel = os.path.relpath(path, ROOT_DIR)
+        log_debug(f"- {rel}")
 
-    all_rows: List[tuple[str, str, str, str, str]] = []
+    all_rows: List[tuple] = []
 
-    for fname in files:
+    for full_path in xlsx_files:
         print()
-        print(f"{MAGENTA}========== Processing file: {fname} =========={RESET}")
-        full_path = os.path.join(ROOT_DIR, fname)
+        rel = os.path.relpath(full_path, ROOT_DIR)
+        print(f"{MAGENTA}========== Processing file: {rel} =========={RESET}")
         rows = process_workbook(full_path)
         all_rows.extend(rows)
 
@@ -713,13 +814,13 @@ def main():
     ws_out = wb_out.active
     ws_out.title = "packages"
 
-    # عرض الأعمدة الأساسية (عدّلها كما تحب)
+    # عرض الأعمدة
     ws_out.column_dimensions["A"].width = 40
     ws_out.column_dimensions["B"].width = 40
     ws_out.column_dimensions["C"].width = 40
     ws_out.column_dimensions["D"].width = 40
 
-    # الهيدر المطلوب (مع Category قبل delete)
+    # الهيدر
     ws_out.append([
         "PackageId",
         "ImagePath",
@@ -746,16 +847,28 @@ def main():
     ])
 
     # البيانات + إدراج الصور
-    for row_idx, (uid, filename, title_trim, pkg_name, category) in enumerate(all_rows, start=2):
+    for row_idx, row_data in enumerate(all_rows, start=2):
+        (
+            uid,
+            filename,
+            title_trim,
+            pkg_name,
+            no_val,
+            part_no,
+            part_name_std,
+            qty_val,
+            category,
+        ) = row_data
+
         ws_out.append([
             uid,          # PackageId
             filename,     # ImagePath
             title_trim,   # Title - TRIM
             pkg_name,     # PackageName
-            "",           # No
-            "",           # PartNo
-            "",           # Part Name And Standard
-            "",           # QTY
+            no_val,       # No
+            part_no,      # PartNo
+            part_name_std,# Part Name And Standard
+            qty_val,      # QTY
             category,     # Category
             "",           # delete
             "",           # price
@@ -786,7 +899,6 @@ def main():
 
     wb_out.save(OUTPUT_EXCEL)
     log_success(f"Data Excel file created: '{OUTPUT_EXCEL}'")
-
 
 if __name__ == "__main__":
     main()
