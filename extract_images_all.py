@@ -320,38 +320,39 @@ def find_package_for_y_center(packages: List[Dict[str, Any]], center_y: int) -> 
             return pkg
     return None
 
-def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+def collect_worksheet_images(ws):
     """
-    - تمرّ على الصور وتربطها بالباكجات (OneCellAnchor → حسب السطر، AbsoluteAnchor → حسب الـ Y).
-    - لكل باكج نولّد UID حتى لو لم يكن لها صورة.
-    - لو وُجدت صورة وتم حفظها:
-        pkg["uid"] = uid
-        pkg["image_filename"] = اسم ملف الصورة
-      لو لم تُحفظ:
-        pkg["uid"] = uid
-        pkg["image_filename"] = None
-    - لا تبني صفوف إكسل، فقط تُحدّث كائنات الباكجات.
+    تجمع الصور من الشيت وتطبع إحصائيات بسيطة عنها.
+    ترجع قائمة الصور كما هي (objects).
     """
     images = getattr(ws, "_images", [])
     log_info(f"Total images found: {len(images)}")
     log_info(f"Anchor types count: {Counter(type(img.anchor).__name__ for img in images)}")
+    return images
 
-    unmatched_images = []
 
-    # --- المرحلة الأولى: ربط الصور بالباكجات (ملء images / abs_images) ---
+def map_images_to_packages(images, packages: List[Dict[str, Any]]) -> list[int]:
+    """
+    تمرّ على الصور وتربطها بالباكجات فقط:
+    - تملأ pkg["images"] و pkg["abs_images"]
+    - لو تعذر ربط صورة بأي باكج تضاف إلى unmatched_images
+    لا تحفظ صور على القرص ولا تولّد UID هنا.
+    """
+    unmatched_images: list[int] = []
+
     for idx, img in enumerate(images):
         anchor = img.anchor
         tname = type(anchor).__name__
 
+        # --- OneCellAnchor / TwoCellAnchor: الربط عن طريق رقم السطر ---
         if tname in ["OneCellAnchor", "TwoCellAnchor"] and hasattr(anchor, "_from") and anchor._from is not None:
-            # الربط عن طريق الأسطر
             fm = anchor._from
             row_zero_based = getattr(fm, "row", 0)
             row_excel = row_zero_based + 1  # تحويل من 0-based إلى 1-based
 
             pkg = find_package_for_row(packages, row_excel)
             if pkg:
-                # لو كان للباكج صورة سابقة (من أي نوع) نتجاهل هذه الصورة الإضافية
                 if pkg["images"] or pkg["abs_images"]:
                     log_warn(
                         f"Ignoring extra image #{idx} for package '{pkg['name']}' "
@@ -369,9 +370,10 @@ def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str
                     f"Image #{idx} (OneCellAnchor at row {row_excel}) "
                     f"could not be matched to any package."
                 )
+            continue
 
-        elif tname == "AbsoluteAnchor" and hasattr(anchor, "pos") and anchor.pos is not None:
-            # الربط عن طريق محور Y (pos.y + cy/2)
+        # --- AbsoluteAnchor: الربط عن طريق center_y ---
+        if tname == "AbsoluteAnchor" and hasattr(anchor, "pos") and anchor.pos is not None:
             pos = anchor.pos
             ext = getattr(anchor, "ext", None)
 
@@ -396,7 +398,6 @@ def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str
             pkg = find_package_for_y_center(packages, center_y)
 
             if pkg:
-                # نفس الفكرة: إن كان للباكج صورة مسبقاً نتجاهل هذه
                 if pkg["images"] or pkg["abs_images"]:
                     log_warn(
                         f"Ignoring extra image #{idx} for package '{pkg['name']}' "
@@ -414,17 +415,29 @@ def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str
                     f"Image #{idx} (AbsoluteAnchor center_y={center_y:.0f}) "
                     f"could not be matched to any package."
                 )
+            continue
 
-        else:
-            unmatched_images.append(idx)
-            log_warn(f"Image #{idx} with anchor type '{tname}' could not be processed for mapping.")
+        # --- أنواع أنكر أخرى غير مدعومة ---
+        unmatched_images.append(idx)
+        log_warn(f"Image #{idx} with anchor type '{tname}' could not be processed for mapping.")
 
-    # --- المرحلة الثانية: توليد UID لكل باكج وحفظ الصورة إن وجدت ---
+    return unmatched_images
+
+
+def assign_uids_and_save_images(images, packages: List[Dict[str, Any]]) -> None:
+    """
+    لكل باكج:
+    - اختيار أول صورة (OneCellAnchor ثم Absolute إن وُجدت)
+    - توليد UID
+    - حفظ الصورة في IMAGES_DIR (إن وُجدت bytes) وتخزين اسم الملف
+    - تعبئة pkg['uid'] و pkg['image_filename']
+    لا تقوم بأي منطق ربط؛ تفترض أن map_images_to_packages سبق أن ملأ indices.
+    """
     log_info("=== Package list (id + optional image) ===")
     print("package_name\tstart_row\tid\timage")
 
     for pkg in packages:
-        # نختار أولاً صورة من نوع OneCellAnchor (لو وجدت)، ثم Absolute
+        # اختيار index الصورة (إن وُجِد)
         img_idx = None
         if pkg["images"]:
             img_idx = pkg["images"][0]
@@ -432,7 +445,7 @@ def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str
             img_idx = pkg["abs_images"][0]
 
         uid = str(uuid4())
-        filename = None  # None تعني لا يوجد ملف صورة
+        filename = None
 
         if img_idx is not None:
             img_obj = images[img_idx]
@@ -458,12 +471,26 @@ def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str
                     )
                 except Exception as e:
                     log_error(f"Failed to save image for package '{pkg['name']}': {e}")
-                    filename = None  # نفشل فنرجعها None
+                    filename = None
 
         pkg["uid"] = uid
         pkg["image_filename"] = filename
 
         print(f"{pkg['name']}\t{pkg['start_row']}\t{uid}\t{filename or ''}")
+
+
+def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    تنسيق عالي المستوى:
+    - تجمع الصور من الشيت
+    - تربط الصور بالباكجات (indices فقط)
+    - تولّد UID لكل باكج وتحفظ صورة واحدة (إن وُجدت) في IMAGES_DIR
+    - ترجع قائمة الباكجات بعد التحديث
+    """
+    images = collect_worksheet_images(ws)
+
+    unmatched_images = map_images_to_packages(images, packages)
+    assign_uids_and_save_images(images, packages)
 
     if unmatched_images:
         log_warn(f"Unmatched images: {unmatched_images}")
@@ -552,7 +579,8 @@ def main():
 
     log_info(f"Found {len(files)} .xlsx file(s) in ROOT_DIR: {ROOT_DIR}")
 
-    all_rows: List[tuple[str, str, str]] = []
+    all_rows: List[tuple[str, str, str, str, str]] = []
+
 
     for fname in files:
         print()
