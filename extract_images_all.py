@@ -12,7 +12,7 @@ from openpyxl.drawing.image import Image as XLImage
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # الروت المستهدف الذي يحتوي ملفات الإكسل
-ROOT_DIR = os.path.join(SCRIPT_DIR, "TurnKey Files")
+ROOT_DIR = os.path.join(SCRIPT_DIR, "TurnKeyFiles2")
 
 # فولدر الصور (بجانب السكربت)
 IMAGES_DIR = os.path.join(SCRIPT_DIR, "images")
@@ -254,7 +254,7 @@ def build_packages(ws, top_y, bottom_y) -> List[Dict[str, Any]]:
             "image_filename": None,
             "category": None,
         }
-        log_debug(f"New package detected at row {row}: '{text}'")
+        # log_debug(f"New package detected at row {row}: '{text}'")
 
     if current_package is not None:
         current_package["end_row"] = ws.max_row
@@ -300,9 +300,12 @@ def fill_packages_categories(ws, packages: List[Dict[str, Any]]) -> None:
 
 def detect_detail_columns(ws, first_package: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
     """
-    كما اتفقنا: نبحث داخل أسطر الباكج الأولى عن عمود يحتوي 'no'
-    في الأعمدة 2..6، ونعتبره عمود No، وما بعده: Part, Desc, QTY.
+    نبحث عن عمود رقم السطر (No) بهذه الأولوية:
+    1) عمود عنوانه بالضبط "#"
+    2) أو عمود عنوانه "no" / "No" / "No." الخ
+    ثم نعتبر ما بعده: Part, Desc, QTY.
     """
+
     start_row = first_package["start_row"]
     end_row = first_package["end_row"]
 
@@ -310,39 +313,52 @@ def detect_detail_columns(ws, first_package: Dict[str, Any]) -> Optional[Tuple[i
     MAX_OFFSET_COLS = 5
     last_col_to_check = FIRST_DATA_COL + MAX_OFFSET_COLS - 1
 
+    candidate_no_cols = []
+
     for row in range(start_row, end_row + 1):
         for col in range(FIRST_DATA_COL, last_col_to_check + 1):
             cell_value = ws.cell(row=row, column=col).value
             if not isinstance(cell_value, str):
                 continue
 
-            text = cell_value.strip().lower()
-            if "no" not in text:
+            raw = cell_value.strip()
+            lower = raw.lower()
+
+            # الشرط الجديد: إما بالضبط "#" أو "no" (مع بعض الأشكال البسيطة)
+            is_hash = (raw == "#")
+            is_no   = (lower in {"no", "no.", "no#", "no:"})
+
+            if not (is_hash or is_no):
                 continue
 
-            col_no = col
-            col_part = col_no + 1
-            col_desc = col_no + 2
-            col_qty = col_no + 3
+            candidate_no_cols.append((row, col, raw))
 
-            if col_qty > ws.max_column:
-                log_warn(
-                    f"Detected 'No' at col {col_no} row {row} but following columns "
-                    f"exceed max_column={ws.max_column}."
-                )
-                return None
+    if not candidate_no_cols:
+        log_warn(
+            "Could not detect detail columns (No / Part Number / Description / QTY) "
+            "inside the first package range."
+        )
+        return None
 
-            log_info(
-                f"Detail columns detected (row {row}): "
-                f"No={col_no}, PartNo={col_part}, Desc={col_desc}, QTY={col_qty}"
-            )
-            return col_no, col_part, col_desc, col_qty
+    # لو وجدنا أكثر من واحد، نختار أول واحد (أقرب شيء للأعلى)
+    row, col_no, header_text = candidate_no_cols[0]
 
-    log_warn(
-        "Could not detect detail columns (No / Part Number / Description / QTY) "
-        "inside the first package range."
+    col_part = col_no + 1
+    col_desc = col_no + 2
+    col_qty  = col_no + 3
+
+    if col_qty > ws.max_column:
+        log_warn(
+            f"Detected No-like header '{header_text}' at col {col_no} row {row} "
+            f"but following columns exceed max_column={ws.max_column}."
+        )
+        return None
+
+    log_info(
+        f"Detail columns detected (row {row}, header '{header_text}'): "
+        f"No={col_no}, PartNo={col_part}, Desc={col_desc}, QTY={col_qty}"
     )
-    return None
+    return col_no, col_part, col_desc, col_qty
 
 
 # ==========================
@@ -456,8 +472,8 @@ def map_images_to_packages(images, packages: List[Dict[str, Any]]) -> List[int]:
 
 
 def assign_uids_and_save_images(images, packages: List[Dict[str, Any]]) -> None:
-    log_info("=== Package list (id + optional image) ===")
-    print("package_name\tstart_row\tid\timage")
+    # log_info("=== Package list (id + optional image) ===")
+    # print("package_name\tstart_row\tid\timage")
 
     for pkg in packages:
         img_idx = None
@@ -487,10 +503,10 @@ def assign_uids_and_save_images(images, packages: List[Dict[str, Any]]) -> None:
                     with open(filepath, "wb") as f:
                         f.write(img_bytes)
 
-                    log_success(
-                        f"Saved image #{img_idx} for package '{pkg['name']}' "
-                        f"as '{filename}'"
-                    )
+                    # log_success(
+                    #     f"Saved image #{img_idx} for package '{pkg['name']}' "
+                    #     f"as '{filename}'"
+                    # )
                 except Exception as e:
                     log_error(f"Failed to save image for package '{pkg['name']}': {e}")
                     filename = None
@@ -498,7 +514,7 @@ def assign_uids_and_save_images(images, packages: List[Dict[str, Any]]) -> None:
         pkg["uid"] = uid
         pkg["image_filename"] = filename
 
-        print(f"{pkg['name']}\t{pkg['start_row']}\t{uid}\t{filename or ''}")
+        # print(f"{pkg['name']}\t{pkg['start_row']}\t{uid}\t{filename or ''}")
 
 
 def link_images_to_packages(ws, packages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -766,13 +782,14 @@ def process_workbook(path: str) -> List[tuple]:
 # ==========================
 # الدالة الرئيسية
 # ==========================
-
 def main():
     """
     - يحضّر فولدر الصور.
     - يعالج كل ملف .xlsx في ROOT_DIR وفي المجلدات الفرعية داخله.
     - يبني ملف إكسل جديد packages_data.xlsx
       يحتوي أسطر القطع مع تكرار بيانات الباكج لكل سطر.
+    - يضع الصورة في عمود مستقل (B) واسم الملف في عمود مستقل (C).
+    - يترك سطرًا فارغًا بعد أسطر كل باكج قبل بدء الباكج التالية.
     """
     ensure_clean_images_dir()
 
@@ -799,6 +816,7 @@ def main():
 
     all_rows: List[tuple] = []
 
+    # معالجة كل ملف إكسل وجمع كل أسطر الداتا
     for full_path in xlsx_files:
         print()
         rel = os.path.relpath(full_path, ROOT_DIR)
@@ -810,20 +828,28 @@ def main():
         log_warn("No rows were collected. Excel data file will not be created.")
         return
 
+    # إنشاء ملف الإكسل الناتج
     wb_out = Workbook()
     ws_out = wb_out.active
     ws_out.title = "packages"
 
     # عرض الأعمدة
     ws_out.column_dimensions["A"].width = 40
-    ws_out.column_dimensions["B"].width = 40
-    ws_out.column_dimensions["C"].width = 40
-    ws_out.column_dimensions["D"].width = 40
+    ws_out.column_dimensions["B"].width = 9
+    ws_out.column_dimensions["C"].width = 10
+    ws_out.column_dimensions["D"].width = 30
+    ws_out.column_dimensions["E"].width = 30
+    ws_out.column_dimensions["F"].width = 5
+    ws_out.column_dimensions["G"].width = 18
+    ws_out.column_dimensions["H"].width = 20
+    ws_out.column_dimensions["I"].width = 4
+
 
     # الهيدر
-    ws_out.append([
+    header = [
         "PackageId",
-        "ImagePath",
+        "Image",       # عمود معاينة الصورة
+        "ImagePath",   # اسم ملف الصورة (نصي فقط)
         "Title - TRIM",
         "PackageName",
         "No",
@@ -844,10 +870,18 @@ def main():
         "is_pink",
         "is_yellow",
         "internal_notes",
-    ])
+    ]
+    ws_out.append(header)
 
-    # البيانات + إدراج الصور
-    for row_idx, row_data in enumerate(all_rows, start=2):
+    # عدد الأعمدة (نستخدمه عندما نضيف سطر فارغ)
+    num_cols = len(header)
+
+    # الهيدر في الصف 1، نبدأ العد من هناك
+    row_idx = 1
+    last_pkg_key = None  # لتتبع تغيّر الباكج
+
+    # البيانات + إدراج الصور مع سطر فارغ بين كل باكج والتي تليها
+    for row_data in all_rows:
         (
             uid,
             filename,
@@ -860,42 +894,56 @@ def main():
             category,
         ) = row_data
 
+        # تعريف الباكج: uid + عنوان الملف + اسم الباكج
+        pkg_key = (uid, title_trim, pkg_name)
+
+        # لو تغيّرت الباكج عن السابقة → نضيف سطر فارغ
+        if last_pkg_key is not None and pkg_key != last_pkg_key:
+            row_idx += 1
+            ws_out.append([""] * num_cols)  # سطر فارغ تماماً
+
+        # نضيف سطر الداتا لهذه الباكج
+        row_idx += 1
         ws_out.append([
-            uid,          # PackageId
-            filename,     # ImagePath
-            title_trim,   # Title - TRIM
-            pkg_name,     # PackageName
-            no_val,       # No
-            part_no,      # PartNo
-            part_name_std,# Part Name And Standard
-            qty_val,      # QTY
-            category,     # Category
-            "",           # delete
-            "",           # price
-            "",           # Description
-            "",           # Old Part No.
-            "",           # Names and specifications of old parts
-            "",           # note
-            "",           # is_red
-            "",           # is_line
-            "",           # is_deleted
-            "",           # is_orange
-            "",           # is_pink
-            "",           # is_yellow
-            "",           # internal_notes
+            uid,           # PackageId
+            "",            # Image (الصورة فقط، لا نص)
+            filename,      # ImagePath
+            title_trim,    # Title - TRIM
+            pkg_name,      # PackageName
+            no_val,        # No
+            part_no,       # PartNo
+            part_name_std, # Part Name And Standard
+            qty_val,       # QTY
+            category,      # Category
+            "",            # delete
+            "",            # price
+            "",            # Description
+            "",            # Old Part No.
+            "",            # Names and specifications of old parts
+            "",            # note
+            "",            # is_red
+            "",            # is_line
+            "",            # is_deleted
+            "",            # is_orange
+            "",            # is_pink
+            "",            # is_yellow
+            "",            # internal_notes
         ])
 
+        # إدراج الصورة في العمود B لنفس الصف
         if filename:
             img_path = os.path.join(IMAGES_DIR, filename)
             if os.path.exists(img_path):
                 try:
                     xl_img = XLImage(img_path)
-                    xl_img.width = 80
-                    xl_img.height = 80
+                    xl_img.width = 50
+                    xl_img.height = 50
                     ws_out.add_image(xl_img, f"B{row_idx}")
-                    ws_out.row_dimensions[row_idx].height = 60
+                    ws_out.row_dimensions[row_idx].height = 35
                 except Exception as e:
                     log_warn(f"Failed to embed image '{img_path}' into Excel: {e}")
+
+        last_pkg_key = pkg_key
 
     wb_out.save(OUTPUT_EXCEL)
     log_success(f"Data Excel file created: '{OUTPUT_EXCEL}'")
