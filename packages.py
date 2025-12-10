@@ -66,7 +66,6 @@ def log_debug(msg: str) -> None:
 def to_int_or_none(value) -> Optional[int]:
     """
     محاولة تحويل القيمة إلى int وإرجاع None لو فشل التحويل أو كانت القيمة فارغة.
-    مشابهة تماماً لما كان يحدث في نسخة pandas.
     """
     if value is None:
         return None
@@ -74,7 +73,6 @@ def to_int_or_none(value) -> Optional[int]:
         text = str(value).strip()
         if not text:
             return None
-        # أحياناً تكون القيمة float مثل 3.0
         f = float(text)
         return int(f)
     except (ValueError, TypeError):
@@ -82,19 +80,18 @@ def to_int_or_none(value) -> Optional[int]:
 
 
 # ==========================
-# حساب إحداثيات Y للصفوف
+# حساب إحداثيات Y للصفوف (نحتفظ به لو احتجناه لاحقاً)
 # ==========================
 
 def compute_row_y_map(ws):
     """
     تحسب إحداثيات Y (بالـ EMU) لكل صف:
-    top_y[row] = موضع بداية الصف من الأعلى
-    bottom_y[row] = موضع نهاية الصف
-    نعتمد على ارتفاع الصفوف (إن كان مخصصاً) أو ارتفاع الديفولت من sheet_format.
+    top_y[row] = بداية الصف
+    bottom_y[row] = نهاية الصف
     """
     sheet_format = ws.sheet_format
     default_height_points = sheet_format.defaultRowHeight or 15  # نقاط
-    EMU_PER_POINT = 12700  # ثابت تحويل من نقاط إلى EMU
+    EMU_PER_POINT = 12700
 
     top_y = {}
     bottom_y = {}
@@ -147,7 +144,6 @@ def find_first_header_row(ws) -> int:
 def build_packages(ws, top_y, bottom_y) -> List[Dict[str, Any]]:
     """
     تبني قائمة الباكجات اعتماداً على العمود الأول.
-    نفس المنطق السابق مع y_start و y_end، لكن بدون صور.
     """
     header_row = find_first_header_row(ws)
     if header_row <= 1:
@@ -300,11 +296,7 @@ def detect_detail_columns(ws, first_package: Dict[str, Any]) -> Optional[Tuple[i
 
 def flatten_vertical_merges_in_column(ws, col: int) -> None:
     """
-    يفك الدمج العمودي في عمود واحد (مثل عمود No أو QTY):
-    - يبحث في ws.merged_cells عن أي range من نوع عمودي في هذا العمود (min_col == max_col == col)
-    - يأخذ قيمة الخلية الأولى (أعلى سطر في الدمج)
-    - يعمل unmerge للـ range
-    - يكتب نفس القيمة في كل الأسطر ضمن هذا الدمج لهذا العمود
+    يفك الدمج العمودي في عمود واحد (مثل عمود No أو QTY)
     """
     merged_ranges = list(ws.merged_cells.ranges)
 
@@ -349,9 +341,7 @@ def find_data_rows_range_for_package(
     col_desc: int,
 ) -> Optional[Tuple[int, int]]:
     """
-    يحدد نطاق أسطر البيانات (parts) لكل باكج:
-    - أي سطر فيه Part Number أو Description نعتبره داتا.
-    - يرجع (data_start, data_end) أو None لو لم يوجد داتا.
+    يحدد نطاق أسطر البيانات (parts) لكل باكج.
     """
     data_start = None
     data_end = None
@@ -384,9 +374,7 @@ def normalize_merged_detail_cells_for_all_packages(
 ) -> Dict[int, Tuple[int, int]]:
     """
     تعوّض الدمج العمودي داخل أعمدة تفاصيل القطع ضمن مجال أسطر الداتا لكل باكج.
-    ترجع dict يربط package_index → (data_start, data_end).
     """
-
     flatten_vertical_merges_in_column(ws, col_no)
     flatten_vertical_merges_in_column(ws, col_qty)
 
@@ -532,9 +520,8 @@ def main():
     - يعالج كل ملف .xlsx في ROOT_DIR وفي المجلدات الفرعية داخله.
     - يبني ملف إكسل جديد packages_data.xlsx
       يحتوي أسطر القطع مع تكرار بيانات الباكج لكل سطر.
-    - لا يتعامل مع الصور إطلاقاً.
+    - يترك أعمدة الصورة واسم الصورة فارغين دائماً.
     """
-    # نجمع كل ملفات .xlsx في ROOT_DIR وفي كل المجلدات الفرعية
     xlsx_files: List[str] = []
     for dirpath, _, filenames in os.walk(ROOT_DIR):
         for name in filenames:
@@ -571,18 +558,21 @@ def main():
     ws_out = wb_out.active
     ws_out.title = "packages"
 
-    # عرض الأعمدة (بدون أعمدة صور)
-    ws_out.column_dimensions["A"].width = 40   # PackageId
-    ws_out.column_dimensions["B"].width = 30   # Title - TRIM
-    ws_out.column_dimensions["C"].width = 30   # PackageName
-    ws_out.column_dimensions["D"].width = 5    # No
-    ws_out.column_dimensions["E"].width = 18   # PartNo
-    ws_out.column_dimensions["F"].width = 30   # Part Name And Standard
-    ws_out.column_dimensions["G"].width = 6    # QTY
-    ws_out.column_dimensions["H"].width = 20   # Category
+    # عرض الأعمدة (مع أعمدة الصورة لكن تبقى فارغة)
+    ws_out.column_dimensions["A"].width = 40  # PackageId
+    ws_out.column_dimensions["B"].width = 9   # Image
+    ws_out.column_dimensions["C"].width = 10  # ImagePath
+    ws_out.column_dimensions["D"].width = 30  # Title - TRIM
+    ws_out.column_dimensions["E"].width = 30  # PackageName
+    ws_out.column_dimensions["F"].width = 5   # No
+    ws_out.column_dimensions["G"].width = 18  # PartNo
+    ws_out.column_dimensions["H"].width = 20  # Part Name And Standard
+    ws_out.column_dimensions["I"].width = 4   # QTY
 
     header = [
         "PackageId",
+        "Image",       # عمود معاينة الصورة (يبقى فارغ دائماً)
+        "ImagePath",   # اسم ملف الصورة (يبقى فارغ دائماً)
         "Title - TRIM",
         "PackageName",
         "No",
@@ -631,7 +621,9 @@ def main():
 
         row_idx += 1
         ws_out.append([
-            uid,           # PackageId
+            "",           # PackageId
+            "",            # Image (فارغ)
+            "",            # ImagePath (فارغ)
             title_trim,    # Title - TRIM
             pkg_name,      # PackageName
             no_val,        # No
